@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
@@ -15,7 +16,7 @@ async function startServer() {
   if (!process.env.GEMINI_API_KEY) {
     console.warn("WARNING: GEMINI_API_KEY environment variable is missing.");
   }
-  
+
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
   app.get("/api/download-image", async (req, res) => {
@@ -25,12 +26,16 @@ async function startServer() {
         return res.status(400).json({ error: "A URL é obrigatória" });
       }
 
+      const imageAbort = new AbortController();
+      const imageTimeout = setTimeout(() => imageAbort.abort(), 12000);
       const imageRes = await fetch(url, {
+        signal: imageAbort.signal,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "Accept": "image/*"
         }
       });
+      clearTimeout(imageTimeout);
 
       if (!imageRes.ok) {
         throw new Error("Falha ao buscar a imagem");
@@ -61,38 +66,65 @@ async function startServer() {
       // 1. Fetching URL Content
       let rawText = "";
       let imageUrl: string | undefined = undefined;
+      let structuredData: object | null = null;
       try {
+        const pageAbort = new AbortController();
+        const pageTimeout = setTimeout(() => pageAbort.abort(), 12000);
         const fetchRes = await fetch(url, {
+          signal: pageAbort.signal,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
           }
         });
+        clearTimeout(pageTimeout);
         const html = await fetchRes.text();
-        
-        // Clean up HTML with cheerio to just pass important text to LLM
+
         const $ = cheerio.load(html);
-        
-        imageUrl = $('meta[property="og:image"]').attr('content') || 
-                       $('meta[name="twitter:image"]').attr('content') || 
-                       $('link[rel="image_src"]').attr('href');
-                       
+
+        // Extract JSON-LD structured product data (most reliable source)
+        $('script[type="application/ld+json"]').each((_, el) => {
+          if (structuredData) return; // already found one
+          try {
+            const parsed = JSON.parse($(el).html() || '');
+            const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+            if (entry['@type'] === 'Product' || entry['@type'] === 'Offer') {
+              structuredData = entry;
+            }
+          } catch (_) {}
+        });
+
+        // Extract product-specific Open Graph meta tags
+        const ogPrice = $('meta[property="product:price:amount"]').attr('content') ||
+                        $('meta[property="product:sale_price:amount"]').attr('content');
+
+        imageUrl = $('meta[property="og:image"]').attr('content') ||
+                   $('meta[name="twitter:image"]').attr('content') ||
+                   $('link[rel="image_src"]').attr('href');
+
         if (!imageUrl) {
-           const firstImg = $('img').not('[width<100]').first().attr('src');
-           if (firstImg) imageUrl = firstImg;
+          const firstImg = $('img').filter((_, el) => {
+            const w = parseInt($(el).attr('width') || '0');
+            return !w || w >= 100;
+          }).first().attr('src');
+          if (firstImg) imageUrl = firstImg;
         }
 
         if (imageUrl && !imageUrl.startsWith('http')) {
-           try {
-             imageUrl = new URL(imageUrl, url).toString();
-           } catch(e) {}
+          try { imageUrl = new URL(imageUrl, url).toString(); } catch(_) {}
         }
 
-        $("script, style, noscript, svg, img").remove();
-        rawText = $("body").text().replace(/\\s+/g, " ").trim();
-        // Limit rawText to avoid massive token usage on large pages
-        rawText = rawText.substring(0, 15000); 
+        $("script, style, noscript, svg, img, nav, footer, header").remove();
+        rawText = $("body").text().replace(/\s+/g, " ").trim();
+        rawText = rawText.substring(0, 15000);
+
+        // Prepend structured data and meta price if found for better AI accuracy
+        if (structuredData) {
+          rawText = `[DADOS ESTRUTURADOS JSON-LD]: ${JSON.stringify(structuredData)}\n\n[CONTEÚDO DA PÁGINA]: ${rawText}`;
+        } else if (ogPrice) {
+          rawText = `[PREÇO EXTRAÍDO VIA META TAG]: ${ogPrice}\n\n[CONTEÚDO DA PÁGINA]: ${rawText}`;
+        }
       } catch (err: any) {
         console.warn("Erro ao raspar a URL diretamente, usando URL apenas no prompt:", err.message);
         rawText = `Falha ao extrair o HTML. A URL é: ${url}. Tente inferir pelo link e pelo seu conhecimento.`;
@@ -124,7 +156,7 @@ Regra 3: Gere DOIS formatos estritos de texto, usando exatamente a formatação 
 
 Corra antes que acabe! 👇
 
-🛒 Compre aqui: 
+🛒 Compre aqui:
 [Link]
 
 ## Opção B: Script para Vídeo Curto
@@ -188,9 +220,14 @@ Corra antes que acabe! 👇
         throw new Error("Falha ao gerar resposta do Gemini.");
       }
 
-      const jsonResult = JSON.parse(resultText);
-      jsonResult.extractedInfo.link = url; // Ensure link is included
-      
+      let jsonResult: any;
+      try {
+        jsonResult = JSON.parse(resultText);
+      } catch (_) {
+        throw new Error("Resposta do Gemini em formato inválido. Tente novamente.");
+      }
+      jsonResult.extractedInfo.link = url;
+
       // Override or inject the extracted image URL if Gemini didn't pick it up or if we just want to ensure it's there
       if (imageUrl && !jsonResult.extractedInfo.imageUrl) {
         jsonResult.extractedInfo.imageUrl = imageUrl;
@@ -199,7 +236,7 @@ Corra antes que acabe! 👇
       return res.json(jsonResult);
     } catch (error: any) {
       console.error("Erro no processamento:", error);
-      
+
       let errorMessage = "Erro interno do servidor.";
       const errorString = error?.message || JSON.stringify(error);
       if (errorString && errorString.includes("503") && errorString.includes("high demand")) {
@@ -207,7 +244,7 @@ Corra antes que acabe! 👇
       } else if (error.message) {
          errorMessage = error.message;
       }
-      
+
       res.status(500).json({ error: errorMessage });
     }
   });
