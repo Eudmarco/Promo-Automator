@@ -1,0 +1,6 @@
+{
+  "name": "Promo Automator",
+  "description": "Automatiza a criação de layouts e scripts de divulgação a partir de links de promoção.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
