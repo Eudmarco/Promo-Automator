@@ -1,23 +1,13 @@
-import React, { useState } from 'react';
-import { ShoppingBag, Loader2, Copy, Check, Link as LinkIcon, AlertCircle, RotateCcw, Share2 } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Copy, Check, AlertCircle, RotateCcw } from 'lucide-react';
 import { PromoData } from './types.ts';
 
-function parseVideoScenes(script: string): { label: string; text: string }[] {
-  const scenes: { label: string; text: string }[] = [];
-  const regex = /\[([^\]]+)\]:\s*(.+)/g;
-  let match;
-  while ((match = regex.exec(script)) !== null) {
-    scenes.push({ label: match[1], text: match[2] });
-  }
-  return scenes;
-}
-
-function applyHeadline(layout: string, headline: string): string {
-  const lines = layout.split('\n');
-  const idx = lines.findIndex(l => l.trim() !== '');
-  if (idx === -1) return layout;
-  lines[idx] = headline;
-  return lines.join('\n');
+function WhatsAppIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zM11.997 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.978-1.304A9.957 9.957 0 0011.997 22C17.523 22 22 17.523 22 12S17.523 2 11.997 2z" />
+    </svg>
+  );
 }
 
 export default function App() {
@@ -26,10 +16,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<PromoData | null>(null);
   const [copiedSocial, setCopiedSocial] = useState(false);
-  const [copiedVideo, setCopiedVideo] = useState(false);
-  const [selectedHeadline, setSelectedHeadline] = useState<string | null>(null);
-  const [isSharing, setIsSharing] = useState(false);
-  const [shareStatus, setShareStatus] = useState<'fallback' | null>(null);
+  const [copiedWhatsApp, setCopiedWhatsApp] = useState(false);
+  const [editedSocialLayout, setEditedSocialLayout] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,14 +26,17 @@ export default function App() {
     setIsLoading(true);
     setError(null);
     setData(null);
-    setSelectedHeadline(null);
-    setShareStatus(null);
+    setEditedSocialLayout('');
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
     try {
       const response = await fetch('/api/generate-promo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -55,269 +46,182 @@ export default function App() {
 
       const result = await response.json();
       setData(result);
-    } catch (err: any) {
-      setError(err.message || 'Ocorreu um erro desconhecido.');
+      setEditedSocialLayout(result.socialLayout ?? '');
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError('A requisição excedeu o tempo limite. Tente novamente.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Ocorreu um erro desconhecido.');
+      }
     } finally {
+      clearTimeout(timeoutId);
       setIsLoading(false);
     }
   };
 
-  const handleCopy = (text: string, type: 'social' | 'video') => {
-    navigator.clipboard.writeText(text);
-    if (type === 'social') {
-      setCopiedSocial(true);
-      setTimeout(() => setCopiedSocial(false), 2000);
-    } else {
-      setCopiedVideo(true);
-      setTimeout(() => setCopiedVideo(false), 2000);
-    }
+  const handleCopySocial = () => {
+    navigator.clipboard.writeText(editedSocialLayout);
+    setCopiedSocial(true);
+    setTimeout(() => setCopiedSocial(false), 2000);
   };
 
-  const handleShareWhatsApp = async () => {
-    if (!data?.extractedInfo.imageUrl) return;
-    setIsSharing(true);
-    try {
-      const res = await fetch(
-        `/api/download-image?url=${encodeURIComponent(data.extractedInfo.imageUrl)}`
-      );
-      const blob = await res.blob();
-      const file = new File([blob], 'produto.jpg', { type: blob.type || 'image/jpeg' });
-
-      if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], text: displayedSocialLayout });
-      } else {
-        await navigator.clipboard.writeText(displayedSocialLayout);
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'produto.jpg';
-        a.click();
-        URL.revokeObjectURL(a.href);
-        setShareStatus('fallback');
-        setTimeout(() => setShareStatus(null), 4000);
-      }
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') console.error('Share failed:', err);
-    } finally {
-      setIsSharing(false);
-    }
+  const handleCopyForWhatsApp = () => {
+    navigator.clipboard.writeText(editedSocialLayout);
+    setCopiedWhatsApp(true);
+    setTimeout(() => setCopiedWhatsApp(false), 2500);
   };
-
-  const displayedSocialLayout = data
-    ? selectedHeadline
-      ? applyHeadline(data.socialLayout, selectedHeadline)
-      : data.socialLayout
-    : '';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans p-4 sm:p-8">
-      <div className="max-w-4xl mx-auto space-y-8">
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-[#0d1117] to-slate-950 p-4">
+      <div className="max-w-lg mx-auto space-y-5 pt-10 pb-16">
 
         {/* Header */}
-        <header className="text-center space-y-4 pt-12">
-          <div className="mx-auto w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
-            <ShoppingBag className="w-8 h-8 text-white" />
+        <header className="text-center space-y-3 pb-2">
+          <div className="mx-auto w-14 h-14 rounded-2xl flex items-center justify-center bg-gradient-to-br from-green-500 to-emerald-400 shadow-lg shadow-green-500/30">
+            <WhatsAppIcon className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900">
+          <h1 className="text-3xl font-bold tracking-tight text-white">
             Promo Automator
           </h1>
-          <p className="text-slate-500 max-w-lg mx-auto">
-            Cole o link da sua oferta abaixo e nossa IA extrairá os dados, criando automaticamente layouts para o Instagram, WhatsApp, e roteiros para vídeos curtos (TikTok/Reels).
+          <p className="text-slate-400 text-sm max-w-xs mx-auto text-center">
+            Cole o link da oferta — a IA cria a mensagem pronta para o WhatsApp.
           </p>
         </header>
 
-        {/* Form Container */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 max-w-2xl mx-auto">
-          <form onSubmit={handleSubmit} className="flex gap-3 flex-col sm:flex-row">
-            <div className="relative flex-1">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <LinkIcon className="h-5 w-5 text-slate-400" />
-              </div>
-              <input
-                type="url"
-                required
-                placeholder="https://sua-promocao.com/produto"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                className="block w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600 sm:text-sm transition-shadow"
-              />
-            </div>
+        {/* URL Input */}
+        <div className="bg-white/[0.04] backdrop-blur-xl border border-white/[0.08] rounded-2xl p-4">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+            <label htmlFor="product-url" className="sr-only">URL do produto</label>
+            <input
+              id="product-url"
+              type="url"
+              required
+              placeholder="https://sua-oferta.com/produto"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl bg-white/[0.06] border border-white/[0.12] text-white placeholder-slate-500 text-sm outline-none focus:border-green-500/60 focus:bg-white/[0.08] transition-all"
+            />
             <button
               type="submit"
               disabled={isLoading || !url}
-              className="inline-flex justify-center items-center px-6 py-3 border border-transparent text-sm font-medium rounded-xl text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full inline-flex justify-center items-center gap-2 px-6 py-3.5 rounded-xl font-semibold text-white text-sm bg-gradient-to-r from-green-500 to-emerald-400 shadow-lg shadow-green-500/25 hover:shadow-green-500/40 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             >
               {isLoading ? (
-                <>
-                  <Loader2 className="animate-spin -ml-1 mr-2 h-5 w-5" />
-                  Gerando...
-                </>
+                <><Loader2 className="animate-spin w-4 h-4" /> Gerando...</>
               ) : (
-                'Gerar Scripts'
+                <><WhatsAppIcon className="w-4 h-4" /> Gerar mensagem</>
               )}
             </button>
           </form>
         </div>
 
-        {/* Error Message */}
+        {/* Error */}
         {error && (
-          <div className="max-w-2xl mx-auto flex items-center gap-3 p-4 bg-red-50 text-red-700 rounded-xl border border-red-100">
+          <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm">
             <AlertCircle className="w-5 h-5 flex-shrink-0" />
-            <p className="text-sm font-medium">{error}</p>
+            <p>{error}</p>
           </div>
         )}
 
         {/* Results */}
         {data && (
-          <div className="space-y-6 pt-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
-            {/* Extracted Info Summary */}
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 bg-white p-4 rounded-xl border border-slate-100 shadow-sm text-sm">
+            {/* Product Card */}
+            <div className="bg-white/[0.04] backdrop-blur-xl border border-white/[0.08] rounded-2xl p-4 flex gap-4 items-start">
               {data.extractedInfo.imageUrl && (
-                <div className="flex-shrink-0 relative group">
+                <div className="relative flex-shrink-0 group">
                   <img
                     src={data.extractedInfo.imageUrl}
                     alt={data.extractedInfo.name}
-                    className="w-20 h-20 object-cover rounded-lg border border-slate-200"
+                    className="w-20 h-20 object-cover rounded-xl border border-white/10"
                     referrerPolicy="no-referrer"
+                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
                   />
                   <a
                     href={`/api/download-image?url=${encodeURIComponent(data.extractedInfo.imageUrl)}`}
                     download="produto.jpg"
-                    className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-lg text-white font-medium text-xs"
+                    className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-xl text-white text-xs font-medium"
                   >
                     Baixar
                   </a>
                 </div>
               )}
-              <div className="flex-1 space-y-2">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="font-semibold text-slate-700">Produto Extr.:</span>
-                  <span className="truncate max-w-xs px-2 py-1 bg-slate-100 text-slate-800 rounded-md font-medium" title={data.extractedInfo.name}>
-                    {data.extractedInfo.name || "N/A"}
-                  </span>
+              <div className="flex-1 min-w-0 space-y-2">
+                <p className="text-white text-sm font-medium leading-snug line-clamp-2">
+                  {data.extractedInfo.name}
+                </p>
+                <div className="flex flex-wrap gap-2">
                   {data.extractedInfo.promoPrice && (
-                    <span className="px-2 py-1 bg-green-100 text-green-800 rounded-md font-bold">
+                    <span className="px-2.5 py-1 rounded-lg bg-green-500/15 border border-green-500/25 text-green-400 text-xs font-bold tabular-nums">
                       {data.extractedInfo.promoPrice}
+                    </span>
+                  )}
+                  {data.extractedInfo.rating && (
+                    <span className="px-2.5 py-1 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs font-medium">
+                      ⭐ {data.extractedInfo.rating}
+                    </span>
+                  )}
+                  {data.extractedInfo.coupon && (
+                    <span className="px-2.5 py-1 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium">
+                      🇧🇷 {data.extractedInfo.coupon}
                     </span>
                   )}
                 </div>
                 {data.extractedInfo.imageUrl && (
-                  <p className="text-xs text-slate-500">
-                    💡 Dica: Salve a imagem acima para enviar junto com o texto no WhatsApp. Isso garante que a foto apareça perfeitamente!
+                  <p className="text-slate-500 text-xs">
+                    💡 Baixe a imagem acima para enviar junto no WhatsApp
                   </p>
                 )}
               </div>
             </div>
 
-            {selectedHeadline && (
-              <div className="max-w-full flex items-center gap-2 px-4 py-2 bg-purple-50 border border-purple-200 rounded-xl text-sm text-purple-700">
-                <Check className="w-4 h-4 flex-shrink-0" />
-                <span className="flex-1">Headline da cena aplicada ao post de redes sociais.</span>
+            {/* Message Card */}
+            <div className="bg-white/[0.04] backdrop-blur-xl border border-white/[0.08] rounded-2xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/[0.06] flex justify-between items-center">
+                <span className="text-sm font-semibold text-slate-300">Mensagem WhatsApp</span>
                 <button
-                  onClick={() => setSelectedHeadline(null)}
-                  className="flex items-center gap-1 text-xs font-medium text-purple-600 hover:text-purple-800 transition-colors"
+                  onClick={handleCopySocial}
+                  className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.08] transition-all"
+                  aria-label={copiedSocial ? "Mensagem copiada" : "Copiar mensagem"}
                 >
-                  <RotateCcw className="w-3 h-3" />
-                  Restaurar original
+                  {copiedSocial ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
-            )}
-
-            <div className="grid md:grid-cols-2 gap-6">
-
-              {/* Option A: Social */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
-                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                  <h3 className="text-lg font-semibold text-slate-800">Opção A: Redes Sociais</h3>
+              <div className="px-4 pt-3 pb-3">
+                {editedSocialLayout === data.socialLayout && (
+                  <p className="text-xs text-slate-600 mb-2 select-none">✏️ Toque para editar</p>
+                )}
+                <textarea
+                  value={editedSocialLayout}
+                  onChange={(e) => setEditedSocialLayout(e.target.value)}
+                  className="w-full resize-none bg-transparent border-0 outline-none focus:ring-0 text-white/90 text-sm leading-relaxed cursor-text"
+                  style={{ minHeight: '260px', fontFamily: 'inherit' }}
+                />
+                {editedSocialLayout !== data.socialLayout && (
                   <button
-                    onClick={() => handleCopy(displayedSocialLayout, 'social')}
-                    className="text-slate-500 hover:text-blue-600 transition-colors p-2 rounded-lg hover:bg-blue-50"
-                    title="Copiar texto"
+                    onClick={() => setEditedSocialLayout(data.socialLayout)}
+                    className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors mt-1 mb-1"
                   >
-                    {copiedSocial ? <Check className="w-5 h-5 text-green-600" /> : <Copy className="w-5 h-5" />}
+                    <RotateCcw className="w-3 h-3" /> Restaurar original
                   </button>
-                </div>
-                <div className="p-6 flex-1 bg-white">
-                  <pre className="whitespace-pre-wrap font-sans text-slate-700 text-sm leading-relaxed">
-                    {displayedSocialLayout}
-                  </pre>
-                </div>
-                {data.extractedInfo.imageUrl && (
-                  <div className="px-6 pb-5 flex flex-col gap-2">
-                    <button
-                      onClick={handleShareWhatsApp}
-                      disabled={isSharing}
-                      className="w-full inline-flex justify-center items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {isSharing ? (
-                        <><Loader2 className="animate-spin w-4 h-4" /> Preparando...</>
-                      ) : (
-                        <><Share2 className="w-4 h-4" /> Enviar para WhatsApp (texto + imagem)</>
-                      )}
-                    </button>
-                    {shareStatus === 'fallback' && (
-                      <p className="text-xs text-center text-slate-500">
-                        Texto copiado e imagem baixada — anexe a imagem manualmente no WhatsApp.
-                      </p>
-                    )}
-                  </div>
                 )}
               </div>
-
-              {/* Option B: Video */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
-                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                  <div>
-                    <h3 className="text-lg font-semibold text-slate-800">Opção B: Vídeo Curto</h3>
-                    <p className="text-xs text-slate-400 mt-0.5">Clique em uma cena para usá-la como headline</p>
-                  </div>
-                  <button
-                    onClick={() => handleCopy(data.videoScript, 'video')}
-                    className="text-slate-500 hover:text-purple-600 transition-colors p-2 rounded-lg hover:bg-purple-50"
-                    title="Copiar roteiro"
-                  >
-                    {copiedVideo ? <Check className="w-5 h-5 text-green-600" /> : <Copy className="w-5 h-5" />}
-                  </button>
-                </div>
-                {(() => {
-                  const scenes = parseVideoScenes(data.videoScript);
-                  return scenes.length > 0 ? (
-                    <div className="p-4 flex-1 space-y-2">
-                      {scenes.map((scene, i) => (
-                        <button
-                          key={i}
-                          onClick={() =>
-                            setSelectedHeadline(selectedHeadline === scene.text ? null : scene.text)
-                          }
-                          className={`w-full text-left p-3 rounded-xl border transition-all text-sm ${
-                            selectedHeadline === scene.text
-                              ? 'border-purple-400 bg-purple-50 text-purple-900 shadow-sm'
-                              : 'border-slate-200 hover:border-purple-300 hover:bg-purple-50/40 text-slate-700'
-                          }`}
-                        >
-                          <span className="block text-xs font-semibold text-slate-400 mb-1">
-                            {scene.label}
-                          </span>
-                          <span className="leading-snug">
-                            {scene.text}
-                          </span>
-                          {selectedHeadline === scene.text && (
-                            <Check className="inline-block ml-2 w-3.5 h-3.5 text-purple-500" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
+              <div className="px-4 pb-4">
+                <button
+                  onClick={handleCopyForWhatsApp}
+                  aria-label={copiedWhatsApp ? "Mensagem copiada! Cole no WhatsApp" : "Copiar mensagem para WhatsApp"}
+                  className="w-full inline-flex justify-center items-center gap-2.5 px-4 py-4 rounded-xl font-semibold text-white text-sm bg-gradient-to-r from-green-500 to-emerald-400 shadow-lg shadow-green-500/25 hover:shadow-green-500/40 hover:brightness-110 active:scale-[0.98] transition-all"
+                >
+                  {copiedWhatsApp ? (
+                    <><Check className="w-5 h-5" /> Copiado! Cole no WhatsApp</>
                   ) : (
-                    <div className="p-6 flex-1 bg-white">
-                      <pre className="whitespace-pre-wrap font-sans text-slate-700 text-sm leading-relaxed">
-                        {data.videoScript}
-                      </pre>
-                    </div>
-                  );
-                })()}
+                    <><WhatsAppIcon className="w-5 h-5" /> Copiar mensagem para WhatsApp</>
+                  )}
+                </button>
               </div>
-
             </div>
+
           </div>
         )}
 
